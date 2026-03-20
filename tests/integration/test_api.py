@@ -28,6 +28,17 @@ async def test_healthcheck_returns_ok(client) -> None:
     assert response.headers["X-Request-ID"]
 
 
+async def test_unknown_route_uses_global_error_contract(client) -> None:
+    response = await client.get("/does-not-exist")
+
+    _assert_error_shape(
+        response,
+        status_code=404,
+        code="not_found",
+        message="Not Found",
+    )
+
+
 async def test_readiness_returns_ok_when_database_check_succeeds(client, monkeypatch) -> None:
     async def fake_check_database_connection() -> None:
         return None
@@ -124,6 +135,37 @@ async def test_post_and_get_alerts_persist_and_filter_by_user_id(client, factory
     assert [alert["name"] for alert in list_response.json()] == ["Helada Campo Norte"]
 
 
+async def test_duplicate_active_alert_rule_returns_409_but_can_be_recreated_after_delete(client, factory) -> None:
+    user = await factory.user(name="Alice")
+    field = await factory.field(user=user, name="Campo Norte")
+    payload = {
+        "user_id": user.id,
+        "field_id": field.id,
+        "name": "Helada Campo Norte",
+        "metric": "temp_min_c",
+        "operator": "lte",
+        "threshold_value": 0,
+        "lookahead_days": 3,
+    }
+
+    first_response = await client.post("/alerts", json=payload)
+    duplicate_response = await client.post("/alerts", json={**payload, "name": "Duplicada"})
+
+    assert first_response.status_code == 201
+    _assert_error_shape(
+        duplicate_response,
+        status_code=409,
+        code="integrity_error",
+        message="La operación viola una restricción de integridad de datos",
+    )
+
+    delete_response = await client.delete(f"/alerts/{first_response.json()['id']}?user_id={user.id}")
+    recreated_response = await client.post("/alerts", json={**payload, "name": "Recreada"})
+
+    assert delete_response.status_code == 204
+    assert recreated_response.status_code == 201
+
+
 async def test_get_alert_by_id_returns_owned_alert_and_hides_foreign_one(client, factory) -> None:
     owner = await factory.user(name="Alice")
     other_user = await factory.user(name="Bob")
@@ -198,6 +240,35 @@ async def test_post_alert_validates_payload_and_field_ownership(client, factory)
     )
 
 
+async def test_post_alert_rejects_invalid_thresholds_for_probability_metrics(client, factory) -> None:
+    user = await factory.user(name="Alice")
+    field = await factory.field(user=user, name="Campo Norte")
+
+    response = await client.post(
+        "/alerts",
+        json={
+            "user_id": user.id,
+            "field_id": field.id,
+            "name": "Probabilidad imposible",
+            "metric": "rain_probability_pct",
+            "operator": "gte",
+            "threshold_value": 150,
+            "lookahead_days": 2,
+        },
+    )
+
+    _assert_error_shape(
+        response,
+        status_code=422,
+        code="validation_error",
+        message="La request no pasó la validación",
+    )
+    assert any(
+        detail["loc"] == ["body"] and "entre 0 y 100" in detail["message"]
+        for detail in response.json()["error"]["details"]
+    )
+
+
 async def test_patch_alert_updates_fields_and_resets_last_evaluated_at(client, factory, session_factory, frozen_time) -> None:
     user = await factory.user(name="Alice")
     field = await factory.field(user=user, name="Campo Norte")
@@ -244,6 +315,80 @@ async def test_patch_alert_updates_fields_and_resets_last_evaluated_at(client, f
     assert updated_alert.lookahead_days == 4
     assert updated_alert.is_active is False
     assert updated_alert.last_evaluated_at is None
+
+
+async def test_patch_alert_rejects_thresholds_that_become_invalid_after_merge(client, factory) -> None:
+    user = await factory.user(name="Alice")
+    field = await factory.field(user=user, name="Campo Norte")
+    alert = await factory.alert(
+        field=field,
+        name="Probabilidad de lluvia",
+        metric=AlertMetric.RAIN_PROBABILITY_PCT,
+        operator=AlertOperator.GTE,
+        threshold_value=80,
+        lookahead_days=2,
+    )
+
+    threshold_response = await client.patch(
+        f"/alerts/{alert.id}?user_id={user.id}",
+        json={"threshold_value": 150},
+    )
+    metric_response = await client.patch(
+        f"/alerts/{alert.id}?user_id={user.id}",
+        json={"metric": "rain_mm", "threshold_value": -1},
+    )
+
+    _assert_error_shape(
+        threshold_response,
+        status_code=422,
+        code="validation_error",
+        message="La request no pasó la validación",
+    )
+    assert any("entre 0 y 100" in detail["message"] for detail in threshold_response.json()["error"]["details"])
+
+    _assert_error_shape(
+        metric_response,
+        status_code=422,
+        code="validation_error",
+        message="La request no pasó la validación",
+    )
+    assert any("debe ser >= 0" in detail["message"] for detail in metric_response.json()["error"]["details"])
+
+
+async def test_patch_alert_cannot_collide_with_an_existing_active_rule(client, factory) -> None:
+    user = await factory.user(name="Alice")
+    field = await factory.field(user=user, name="Campo Norte")
+    first_alert = await factory.alert(
+        field=field,
+        name="Helada 1",
+        metric=AlertMetric.TEMP_MIN_C,
+        operator=AlertOperator.LTE,
+        threshold_value=0,
+        lookahead_days=3,
+    )
+    second_alert = await factory.alert(
+        field=field,
+        name="Helada 2",
+        metric=AlertMetric.TEMP_MIN_C,
+        operator=AlertOperator.LTE,
+        threshold_value=-2,
+        lookahead_days=1,
+    )
+
+    response = await client.patch(
+        f"/alerts/{second_alert.id}?user_id={user.id}",
+        json={
+            "threshold_value": first_alert.threshold_value,
+            "lookahead_days": first_alert.lookahead_days,
+        },
+    )
+
+    _assert_error_shape(
+        response,
+        status_code=409,
+        code="integrity_error",
+        message="La operación viola una restricción de integridad de datos",
+    )
 
 
 async def test_delete_alert_soft_deletes_and_hides_from_list(client, factory, session_factory) -> None:

@@ -144,6 +144,7 @@ async def test_inactive_deleted_and_null_metric_alerts_do_not_trigger(
         metric=AlertMetric.TEMP_MIN_C,
         threshold_value=0,
         lookahead_days=1,
+        is_active=False,
         deleted_at=frozen_time(),
     )
     await factory.alert(

@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 logger = logging.getLogger("api.errors")
@@ -75,8 +76,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             ],
         )
 
-    @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    async def _http_exception_handler(request: Request, exc: HTTPException | StarletteHTTPException) -> JSONResponse:
         detail = exc.detail
         if isinstance(detail, str):
             message = detail
@@ -92,6 +92,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             message,
             details=details,
         )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        return await _http_exception_handler(request, exc)
+
+    @app.exception_handler(StarletteHTTPException)
+    async def starlette_http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+        return await _http_exception_handler(request, exc)
 
     @app.exception_handler(IntegrityError)
     async def integrity_error_handler(request: Request, exc: IntegrityError) -> JSONResponse:

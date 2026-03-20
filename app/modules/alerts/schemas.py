@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.modules.alerts.models import AlertMetric, AlertOperator
+from app.modules.alerts.validation import ensure_threshold_value_is_valid
 
 
 class AlertCreate(BaseModel):
@@ -14,6 +15,11 @@ class AlertCreate(BaseModel):
     threshold_value: int
     lookahead_days: int = Field(ge=1, le=30)
 
+    @model_validator(mode="after")
+    def validate_threshold_value(self) -> "AlertCreate":
+        ensure_threshold_value_is_valid(self.metric, self.threshold_value)
+        return self
+
 
 class AlertUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
@@ -22,6 +28,14 @@ class AlertUpdate(BaseModel):
     threshold_value: int | None = None
     lookahead_days: int | None = Field(default=None, ge=1, le=30)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_threshold_value(self) -> "AlertUpdate":
+        if self.metric is None or self.threshold_value is None:
+            return self
+
+        ensure_threshold_value_is_valid(self.metric, self.threshold_value)
+        return self
 
 
 class AlertRead(BaseModel):

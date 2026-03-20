@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, date
 from enum import StrEnum
 
-from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, Date, DateTime, Enum, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
@@ -34,6 +34,31 @@ class Alert(TimestampMixin, Base):
         Index("ix_alerts_active_deleted_id", "is_active", "deleted_at", "id"),
         Index("ix_alerts_active_deleted_last_evaluated_id", "is_active", "deleted_at", "last_evaluated_at", "id"),
         CheckConstraint("lookahead_days BETWEEN 1 AND 30", name="lookahead_days_bounds"),
+        CheckConstraint(
+            "(metric NOT IN ('RAIN_PROBABILITY_PCT', 'SNOW_PROBABILITY_PCT')) "
+            "OR (threshold_value >= 0 AND threshold_value <= 100)",
+            name="threshold_probability_bounds",
+        ),
+        CheckConstraint(
+            "(metric NOT IN ('RAIN_MM', 'SNOW_MM', 'WIND_SPEED_MPS', 'WIND_GUST_MPS')) "
+            "OR threshold_value >= 0",
+            name="threshold_non_negative_for_metric",
+        ),
+        CheckConstraint(
+            "deleted_at IS NULL OR is_active = false",
+            name="deleted_alerts_must_be_inactive",
+        ),
+        Index(
+            "uq_alerts_active_rule",
+            "field_id",
+            "metric",
+            "operator",
+            "threshold_value",
+            "lookahead_days",
+            unique=True,
+            postgresql_where=text("is_active IS TRUE AND deleted_at IS NULL"),
+            sqlite_where=text("is_active = 1 AND deleted_at IS NULL"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -57,6 +82,20 @@ class AlertTrigger(TimestampMixin, Base):
         UniqueConstraint("alert_id", "weather_forecast_id", name="uq_alert_triggers_alert_id_weather_forecast_id"),
         Index("ix_alert_triggers_user_id_created_at", "user_id_snapshot", "created_at"),
         Index("ix_alert_triggers_alert_id_created_at", "alert_id", "created_at"),
+        CheckConstraint(
+            "(metric_snapshot NOT IN ('RAIN_PROBABILITY_PCT', 'SNOW_PROBABILITY_PCT')) "
+            "OR (threshold_value_snapshot >= 0 AND threshold_value_snapshot <= 100)",
+            name="threshold_probability_snapshot_bounds",
+        ),
+        CheckConstraint(
+            "(metric_snapshot NOT IN ('RAIN_MM', 'SNOW_MM', 'WIND_SPEED_MPS', 'WIND_GUST_MPS')) "
+            "OR threshold_value_snapshot >= 0",
+            name="threshold_snapshot_non_negative_for_metric",
+        ),
+        CheckConstraint(
+            "lookahead_days_snapshot BETWEEN 1 AND 30",
+            name="lookahead_days_snapshot_bounds",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -73,7 +112,7 @@ class AlertTrigger(TimestampMixin, Base):
     threshold_value_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
     lookahead_days_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
     triggered_value: Mapped[int] = mapped_column(Integer, nullable=False)
-    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
 
     alert = relationship("Alert", back_populates="triggers")
     weather_forecast = relationship("WeatherForecast", back_populates="triggers")

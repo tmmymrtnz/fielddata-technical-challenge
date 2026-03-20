@@ -1,4 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -7,6 +9,7 @@ from app.db.session import get_session
 from app.modules.alerts.models import Alert
 from app.modules.alerts.schemas import AlertCreate, AlertRead, AlertUpdate
 from app.modules.alerts.service import alert_to_read, require_alert_for_user, require_field_for_user
+from app.modules.alerts.validation import AlertThresholdSettings
 from app.modules.fields.models import Field
 
 router = APIRouter(prefix="/alerts", tags=["alerts"])
@@ -75,6 +78,11 @@ async def update_alert(
 
     if alert.deleted_at is not None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Deleted alerts cannot be updated")
+
+    try:
+        AlertThresholdSettings(metric=alert.metric, threshold_value=alert.threshold_value)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
 
     alert.last_evaluated_at = None
     await session.commit()
