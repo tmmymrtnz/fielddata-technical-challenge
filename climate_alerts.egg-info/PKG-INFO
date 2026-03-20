@@ -1,0 +1,142 @@
+Metadata-Version: 2.4
+Name: climate-alerts
+Version: 0.1.0
+Summary: Backend technical challenge for a climate alerts system.
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: alembic<2.0.0,>=1.14.1
+Requires-Dist: asyncpg<1.0.0,>=0.30.0
+Requires-Dist: fastapi<1.0.0,>=0.115.8
+Requires-Dist: greenlet<4.0.0,>=3.1.1
+Requires-Dist: httpx<1.0.0,>=0.28.1
+Requires-Dist: pydantic-settings<3.0.0,>=2.7.1
+Requires-Dist: sqlalchemy<3.0.0,>=2.0.37
+Requires-Dist: uvicorn[standard]<1.0.0,>=0.34.0
+Provides-Extra: dev
+Requires-Dist: aiosqlite<1.0.0,>=0.21.0; extra == "dev"
+Requires-Dist: pytest<9.0.0,>=8.3.4; extra == "dev"
+Requires-Dist: pytest-asyncio<1.0.0,>=0.25.3; extra == "dev"
+
+# Climate Alerts Challenge
+
+Backend technical challenge for a climate alerting system built with FastAPI, SQLAlchemy, PostgreSQL, Alembic, and an async worker.
+
+## Architecture
+
+- `api`: FastAPI app that exposes read-only `fields`, CRUD for `alerts`, and `notifications`.
+- `worker`: separate async process that reevaluates all active alerts every cycle and delivers pending notifications.
+- `mock-whatsapp`: HTTP webhook that simulates a downstream delivery channel.
+- `db`: PostgreSQL for application state.
+
+The API and worker run as separate processes. That keeps HTTP latency isolated from batch processing and avoids coupling both workloads to the same Python process.
+
+## Domain Decisions
+
+- Forecasts are daily and stored in `weather_forecasts`.
+- Alerts are generic rules defined by `metric + operator + threshold_value`.
+- Supported metrics in v1:
+  - `temp_min_c`
+  - `temp_max_c`
+  - `rain_mm`
+  - `rain_probability_pct`
+  - `snow_mm`
+  - `snow_probability_pct`
+  - `wind_speed_mps`
+  - `wind_gust_mps`
+- `lookahead_days` is set per alert and constrained to `1..30`.
+- Evaluation checks each `forecast_date` individually.
+- `NULL` metrics never trigger alerts.
+- Alerts are soft deleted.
+- Trigger creation is idempotent through `UNIQUE(alert_id, weather_forecast_id)`.
+- Notification delivery is tracked separately from trigger creation to support retries.
+
+## Data Model
+
+- `users`
+- `fields`
+- `weather_forecasts`
+- `alerts`
+- `alert_triggers`
+- `notification_deliveries`
+
+`alert_triggers` stores a snapshot of the alert rule at trigger time. This keeps the historical notification view stable even if an alert is edited later.
+
+## Running With Docker
+
+1. Copy `.env.example` to `.env` if you want custom values.
+2. Run `make up`
+3. Open the API docs at [http://localhost:8000/docs](http://localhost:8000/docs)
+
+`make up` will:
+
+- start PostgreSQL and the mock webhook,
+- apply Alembic migrations,
+- seed demo data,
+- start the API and worker.
+
+Useful commands:
+
+- `make migrate`
+- `make seed`
+- `make worker-once`
+- `make test`
+- `make logs`
+- `make down`
+
+## Seeded Demo Data
+
+The demo seed creates:
+
+- `2` users
+- `3` fields
+- `10` daily forecasts per field
+- sample alerts that generate notifications
+
+Seed command:
+
+```bash
+python -m app.cli seed-demo --reset
+```
+
+## Worker Behavior
+
+- Default interval: `1` minute
+- Override with `--interval-minutes N`
+- One-shot mode: `python -m app.worker.main --run-once`
+- Each cycle:
+  - reevaluates all active alerts,
+  - creates missing triggers,
+  - creates pending delivery rows,
+  - sends due deliveries to the mock webhook,
+  - retries failed deliveries with backoff.
+
+## API Surface
+
+- `GET /health`
+- `GET /fields?user_id=1`
+- `POST /alerts`
+- `GET /alerts?user_id=1`
+- `PATCH /alerts/{id}?user_id=1`
+- `DELETE /alerts/{id}?user_id=1`
+- `GET /notifications?user_id=1`
+
+## Tests
+
+Tests cover:
+
+- unit behavior of the evaluator,
+- integration flow for alert creation, worker execution, and notification listing,
+- soft delete behavior for alerts.
+
+Run them with:
+
+```bash
+pytest
+```
+
+## Notes
+
+- No authentication is implemented. Endpoints are scoped by `user_id`.
+- The mock WhatsApp service logs deliveries to stdout.
+- Set `MOCK_WHATSAPP_FAIL_FIRST_DELIVERY=true` to demonstrate retry behavior.
+

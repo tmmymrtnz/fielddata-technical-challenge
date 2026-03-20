@@ -1,0 +1,63 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: climate_alerts
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d climate_alerts"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mock-whatsapp:
+    build: .
+    command: uvicorn app.mock_whatsapp.app:app --host 0.0.0.0 --port 8010
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts}
+      MOCK_WHATSAPP_FAIL_FIRST_DELIVERY: ${MOCK_WHATSAPP_FAIL_FIRST_DELIVERY:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8010:8010"
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts}
+      MOCK_WHATSAPP_URL: ${MOCK_WHATSAPP_URL:-http://mock-whatsapp:8010/webhook/whatsapp}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DELIVERY_MAX_RETRIES: ${DELIVERY_MAX_RETRIES:-3}
+      DELIVERY_BACKOFF_MINUTES: ${DELIVERY_BACKOFF_MINUTES:-1,5,15}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-10}
+    depends_on:
+      db:
+        condition: service_healthy
+      mock-whatsapp:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+  worker:
+    build: .
+    command: python -m app.worker.main --interval-minutes ${WORKER_INTERVAL_MINUTES:-1}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts}
+      MOCK_WHATSAPP_URL: ${MOCK_WHATSAPP_URL:-http://mock-whatsapp:8010/webhook/whatsapp}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      WORKER_INTERVAL_MINUTES: ${WORKER_INTERVAL_MINUTES:-1}
+      DELIVERY_MAX_RETRIES: ${DELIVERY_MAX_RETRIES:-3}
+      DELIVERY_BACKOFF_MINUTES: ${DELIVERY_BACKOFF_MINUTES:-1,5,15}
+      REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-10}
+    depends_on:
+      db:
+        condition: service_healthy
+      mock-whatsapp:
+        condition: service_started
+

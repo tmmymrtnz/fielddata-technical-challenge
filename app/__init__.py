@@ -1,0 +1,2 @@
+"""Climate alerts application package."""
+
