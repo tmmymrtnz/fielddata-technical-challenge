@@ -1,7 +1,9 @@
 COMPOSE=docker compose
 TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts_test
+HOST_POSTGRES_PORT?=55432
+LOCAL_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:$(HOST_POSTGRES_PORT)/climate_alerts_test
 
-.PHONY: up infra app down migrate seed worker-once test logs
+.PHONY: up infra app down migrate seed worker-once test test-local logs
 
 up:
 	$(COMPOSE) up --build -d db mock-whatsapp
@@ -28,8 +30,12 @@ worker-once:
 	$(COMPOSE) run --rm worker python -m app.worker.main --run-once
 
 test:
-	$(COMPOSE) up --build -d db
-	$(COMPOSE) run --rm --build -e DATABASE_URL=$(TEST_DATABASE_URL) api pytest
+	HOST_POSTGRES_PORT=$(HOST_POSTGRES_PORT) $(COMPOSE) up --build -d --wait db
+	$(COMPOSE) run --rm --build -e TEST_DATABASE_URL=$(TEST_DATABASE_URL) api pytest
+
+test-local:
+	HOST_POSTGRES_PORT=$(HOST_POSTGRES_PORT) $(COMPOSE) up -d --wait db
+	TEST_DATABASE_URL=$${TEST_DATABASE_URL:-$(LOCAL_TEST_DATABASE_URL)} ./.venv/bin/python -m pytest
 
 logs:
 	$(COMPOSE) logs -f api worker mock-whatsapp db

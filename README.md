@@ -38,6 +38,7 @@ The project is implemented as a modular monolith with separate entrypoints for:
 - `worker`: periodically evaluates alerts and delivers notifications
 
 Both share the same codebase and domain model, but run as separate processes. This keeps the API responsive and avoids coupling request latency to batch execution.
+This version assumes a single worker instance and does not coordinate multiple workers.
 
 ### Weather Data Model
 
@@ -118,6 +119,7 @@ Main tables:
 ## Async And Background Processing
 
 The worker is asynchronous and runs independently from the API.
+The implementation assumes only one worker process evaluating alerts and sending notifications.
 
 Each cycle:
 
@@ -191,8 +193,52 @@ API docs:
 - `make seed`
 - `make worker-once`
 - `make test`
+- `make test-local`
 - `make logs`
 - `make down`
+
+## CI/CD
+
+The repository includes GitHub Actions CI in `.github/workflows/ci.yml`.
+
+Flow:
+
+- every pull request runs the full test suite against PostgreSQL
+- pushes to `main` run the same checks again
+- if checks pass on `main`, Render can deploy automatically
+
+CI steps:
+
+- install Python dependencies
+- compile the codebase with `compileall`
+- run `pytest` against a PostgreSQL service
+- build the Docker image to catch container build regressions
+
+## Cloud Deployment
+
+The repository includes a Render Blueprint in `render.yaml`.
+
+It defines:
+
+- one managed PostgreSQL database
+- one web service for the API
+- one background worker
+- one private service for the mock WhatsApp webhook
+
+Recommended setup:
+
+1. Push the repository to GitHub.
+2. In Render, create a new Blueprint and point it to this repository.
+3. Keep `autoDeployTrigger: checksPass` for the services.
+4. Open a pull request: GitHub Actions runs CI.
+5. Merge to `main`: GitHub Actions runs again, and Render deploys only after checks are green.
+
+Notes:
+
+- the application accepts Render's standard Postgres connection string and normalizes it to `asyncpg`
+- the API runs `alembic upgrade head` as a pre-deploy command
+- the worker and API resolve the mock webhook URL from the private service host/port
+- this stack uses paid Render resources (`starter` services and a small managed Postgres plan), which is fine for a challenge/demo but should be called out explicitly
 
 ## API Overview
 
@@ -245,6 +291,24 @@ Run tests with:
 make test
 ```
 
+For local `pytest` runs outside Docker, create a dedicated test env file once:
+
+```bash
+cp .env.test.example .env.test
+docker compose up -d db
+make test-local
+```
+
+`make test-local` uses `127.0.0.1:55432` by default so it does not accidentally connect to a PostgreSQL instance already running on your machine. Override `HOST_POSTGRES_PORT` only if you need a different published port.
+
+The test suite resolves the database URL in this order:
+
+- `TEST_DATABASE_URL`
+- `DATABASE_URL`
+- `.env.test`
+
+The database name must be exactly `climate_alerts_test` so tests cannot accidentally run against the app database.
+
 I also verified the implementation locally with `pytest` in a project virtualenv.
 
 ## Demo Notes
@@ -267,5 +331,5 @@ If this were extended beyond the challenge, the next improvements I would consid
 - real authentication and authorization
 - stronger observability around worker cycles
 - pagination/filtering on notifications
-- explicit locking strategy if running multiple worker instances
+- multi-worker-safe coordination if horizontal worker scaling becomes necessary
 - real ingestion integration instead of seeded forecasts

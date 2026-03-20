@@ -329,7 +329,7 @@ async def test_small_worker_batches_do_not_change_functional_result(
 
     stats = await run_once(
         session_factory=session_factory,
-        settings=settings_factory(worker_alert_batch_size=1, worker_delivery_batch_size=1),
+        settings=settings_factory(worker_delivery_batch_size=1),
     )
 
     assert stats.evaluated_alerts == 3

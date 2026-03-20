@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 
 from app.core.config import Settings
-from app.worker.jobs import ClaimedDelivery, _backoff_minutes, _delivery_payload
+from app.worker.jobs import PendingDelivery, _backoff_minutes, _delivery_payload
 
 
 def test_backoff_minutes_clamps_to_last_configured_value() -> None:
@@ -17,7 +17,7 @@ def test_backoff_minutes_clamps_to_last_configured_value() -> None:
 
 def test_delivery_payload_contains_observable_delivery_fields() -> None:
     payload = _delivery_payload(
-        ClaimedDelivery(
+        PendingDelivery(
             delivery_id=9,
             trigger_id=42,
             target_url="http://mock-whatsapp.test/webhook/whatsapp",
