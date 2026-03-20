@@ -135,15 +135,26 @@ Default worker interval is `1` minute, configurable with `--interval-minutes`.
 
 The challenge states that a weather ingestion job already exists. For this exercise, that ingestion is mocked through a seed command that inserts:
 
-- `2` users
-- `4` fields, with multiple fields for each user
-- daily forecasts
-- sample alerts
+- `12` users by default
+- `48` fields by default, with multiple fields per user
+- `720` daily forecasts by default
+- `144` sample alerts by default
+
+The first seeded users and fields stay human-readable for demos:
+
+- `Alice Farmer`: `Campo Norte`, `Campo Sur`, `Campo Central`, `Campo Oeste`
+- `Bob Grower`: `Lote Este`, `Lote Oeste`, `Lote Norte`, `Lote Sur`
 
 Seed command:
 
 ```bash
 python -m app.cli seed-demo --reset
+```
+
+You can also scale the dataset up or down:
+
+```bash
+python -m app.cli seed-demo --reset --users 20 --fields-per-user 5 --forecast-days 21
 ```
 
 ## How To Run
