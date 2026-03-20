@@ -2,8 +2,9 @@ COMPOSE=docker compose
 TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts_test
 HOST_POSTGRES_PORT?=55432
 LOCAL_TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:$(HOST_POSTGRES_PORT)/climate_alerts_test
+DEMO_SEED_ARGS=--reset --users 2 --fields-per-user 2 --forecast-days 10
 
-.PHONY: up infra app down migrate seed worker-once test test-local logs
+.PHONY: up infra app demo down migrate seed worker-once test test-local logs
 
 up:
 	$(COMPOSE) up --build -d db mock-whatsapp
@@ -16,6 +17,13 @@ infra:
 
 app:
 	$(COMPOSE) up --build -d api worker
+
+demo:
+	$(COMPOSE) down --remove-orphans
+	$(COMPOSE) up --build -d --wait db mock-whatsapp
+	$(COMPOSE) run --rm --build api alembic upgrade head
+	$(COMPOSE) run --rm --build api python -m app.cli seed-demo $(DEMO_SEED_ARGS)
+	$(COMPOSE) up --build -d api
 
 down:
 	$(COMPOSE) down --remove-orphans

@@ -1,53 +1,53 @@
-# Implementation Guide
+# Guía de Implementación
 
-This document captures the intended implementation shape of the challenge so the project can be built or extended without redesigning it from scratch.
+Este documento resume la forma esperada de la implementación del challenge, para que el proyecto se pueda construir o extender sin tener que rediseñarlo desde cero.
 
-## Goal
+## Objetivo
 
-Implement a backend service that lets users define weather alerts on their fields, periodically evaluate stored daily forecasts, and produce idempotent notification triggers with retriable delivery to a mock webhook.
+Implementar un servicio backend que permita a los usuarios definir alertas meteorológicas sobre sus campos, evaluar periódicamente forecasts diarios persistidos y producir triggers de notificación idempotentes con delivery reintentable hacia un webhook mock.
 
-## Scope
+## Alcance
 
-- Daily weather forecasts already exist in the database through seed data or an external ingestion job.
-- Alerts are configured per field.
-- Each alert watches one metric with one operator and one threshold.
-- Worker evaluation is periodic and asynchronous.
-- Trigger creation must be idempotent.
-- Delivery is mocked through an HTTP webhook.
-- No authentication. All API reads and writes are scoped by `user_id`.
+- Los forecasts diarios ya existen en la base de datos, ya sea por datos seedados o por un job externo de ingesta.
+- Las alertas se configuran por campo.
+- Cada alerta observa una métrica, un operador y un umbral.
+- La evaluación del worker es periódica y asíncrona.
+- La creación de triggers tiene que ser idempotente.
+- El delivery está mockeado con un webhook HTTP.
+- No hay autenticación. Todas las lecturas y escrituras de la API están scopeadas por `user_id`.
 
-## Technical Stack
+## Stack Técnico
 
-- FastAPI for HTTP APIs
-- SQLAlchemy async ORM for data access
-- PostgreSQL for production-like storage
-- Alembic for versioned migrations
-- HTTPX for webhook delivery
-- Pytest for tests
-- Docker Compose for reproducibility
+- FastAPI para las APIs HTTP
+- ORM async de SQLAlchemy para acceso a datos
+- PostgreSQL como storage orientado a producción
+- Alembic para migraciones versionadas
+- HTTPX para el delivery del webhook
+- Pytest para tests
+- Docker Compose para reproducibilidad
 
-## Architecture
+## Arquitectura
 
-- `app/main.py`: API entrypoint
-- `app/worker/main.py`: worker entrypoint
-- `app/mock_whatsapp/app.py`: mock downstream service
-- `app/cli.py`: seed command
+- `app/main.py`: entrypoint de la API
+- `app/worker/main.py`: entrypoint del worker
+- `app/mock_whatsapp/app.py`: servicio downstream mock
+- `app/cli.py`: comando de seed
 
-The worker is intentionally separated from the API process. That isolates batch execution from HTTP latency and keeps the scheduling logic out of the web app lifecycle.
-The current implementation assumes a single worker instance. Horizontal worker scaling is out of scope for this version.
+El worker está separado de manera intencional del proceso de API. Eso aísla la ejecución batch de la latencia HTTP y evita meter la lógica de scheduling dentro del lifecycle de la app web.
+La implementación actual asume una sola instancia de worker. El escalado horizontal de workers queda fuera de alcance en esta versión.
 
-## Modeling Decisions
+## Decisiones de Modelado
 
 ### Forecasts
 
-- Granularity is daily.
-- `weather_forecasts` has one row per `field_id + forecast_date`.
-- Forecast values are stored in normalized columns, not provider-specific nested structures.
+- La granularidad es diaria.
+- `weather_forecasts` tiene una fila por `field_id + forecast_date`.
+- Los valores del forecast se almacenan en columnas normalizadas, no en estructuras anidadas específicas del proveedor.
 
-### Alerts
+### Alertas
 
-- Alerts are generic rules, not hardcoded event types.
-- Metrics supported in v1:
+- Las alertas son reglas genéricas, no tipos de evento hardcodeados.
+- Métricas soportadas en v1:
   - `temp_min_c`
   - `temp_max_c`
   - `rain_mm`
@@ -56,71 +56,79 @@ The current implementation assumes a single worker instance. Horizontal worker s
   - `snow_probability_pct`
   - `wind_speed_mps`
   - `wind_gust_mps`
-- Operators supported in v1:
+- Operadores soportados en v1:
   - `lt`
   - `lte`
   - `gt`
   - `gte`
-- `lookahead_days` is a per-alert integer bounded to `1..30`.
+- `lookahead_days` es un entero por alerta acotado a `1..30`.
 
-### Alert Semantics
+### Semántica de Alertas
 
-- The worker evaluates each `forecast_date` independently.
-- `lookahead_days` means "evaluate today plus the next `lookahead_days - 1` daily forecasts".
-- `NULL` metrics do not trigger.
-- Forecast updates can create new triggers on future worker cycles.
-- Existing triggers are never canceled retroactively.
-- Editing an alert affects future evaluations only.
+- El worker evalúa cada `forecast_date` de manera independiente.
+- `lookahead_days` significa “evaluar hoy más los próximos `lookahead_days - 1` forecasts diarios”.
+- Las métricas en `NULL` no disparan alertas.
+- Las actualizaciones de forecast pueden crear nuevos triggers en ciclos futuros del worker.
+- Los triggers existentes nunca se cancelan de manera retroactiva.
+- Editar una alerta impacta sólo en evaluaciones futuras.
 
-### Trigger and Delivery Split
+### Separación entre Trigger y Delivery
 
-- `alert_triggers` stores the business event "this alert fired for this forecast".
-- `notification_deliveries` stores delivery attempts and retry state.
-- The split keeps idempotent trigger creation separate from operational delivery concerns.
+- `alert_triggers` almacena el evento de negocio “esta alerta disparó para este forecast”.
+- `notification_deliveries` almacena intentos de delivery y estado operativo de retries.
+- Esta separación mantiene la creación idempotente de triggers aislada de los problemas operativos del delivery.
 
-## Worker Cycle
+## Ciclo del Worker
 
-Each worker cycle does two things:
+Cada ciclo del worker hace dos cosas:
 
-1. Evaluate active alerts against forecasts in their lookahead horizon.
-2. Deliver pending or retryable notifications to the mock webhook.
+1. Evalúa alertas activas contra los forecasts dentro de su horizonte de lookahead.
+2. Entrega notificaciones pendientes o reintentables al webhook mock.
 
-Why all active alerts are reevaluated every cycle:
+Si un ciclo falla, el worker loguea la excepción y reintenta después de un backoff corto configurable, en lugar de terminar el proceso.
 
-- daily windows move as time passes,
-- edited alerts should take effect on the next cycle,
-- updated forecasts should be picked up without additional orchestration,
-- the challenge scale does not justify a more complex dirty-flag scheduler.
+Por qué se reevalúan todas las alertas activas en cada ciclo:
 
-## Delivery Retries
+- las ventanas diarias se mueven con el paso del tiempo,
+- las alertas editadas deberían impactar en el próximo ciclo,
+- los forecasts actualizados deberían tomarse sin orchestration adicional,
+- la escala del challenge no justifica un scheduler más complejo basado en dirty flags.
 
-- default max retries: `3`
-- default backoff minutes: `1,5,15`
-- `notification_deliveries.status` transitions:
+## Retries de Delivery
+
+- máximo de retries por defecto: `3`
+- minutos de backoff por defecto: `1,5,15`
+- el delivery HTTP saliente reutiliza un cliente async dentro del event loop del worker, en lugar de crear un cliente nuevo por notificación
+- transiciones de `notification_deliveries.status`:
   - `pending`
   - `retrying`
   - `delivered`
   - `failed`
 
-## Reproducibility
+## Endpoints de Salud
 
-Recommended demo flow:
+- `GET /health` es un chequeo de liveness del proceso de API
+- `GET /ready` verifica conectividad con la base y es un mejor target para health checks de plataforma
+
+## Reproducibilidad
+
+Flujo recomendado para una demo:
 
 1. `make up`
-2. Open [http://localhost:8000/docs](http://localhost:8000/docs)
-3. Create or edit an alert
-4. Run `make worker-once` if you want an immediate demonstration
-5. Check `GET /notifications?user_id=...`
-6. Watch webhook logs with `make logs`
+2. Abrí [http://localhost:8000/docs](http://localhost:8000/docs)
+3. Creá o editá una alerta
+4. Corré `make worker-once` si querés una demostración inmediata
+5. Mirá `GET /notifications?user_id=...`
+6. Mirá los logs del webhook con `make logs`
 
-## Suggested Implementation Order
+## Orden de Implementación Sugerido
 
-1. Base project scaffold and settings
-2. SQLAlchemy models and Alembic migration
-3. Seed CLI
-4. Alert evaluator unit tests
-5. Alerts API
-6. Worker evaluation and idempotent trigger creation
-7. Mock webhook and delivery retries
-8. Notifications API
-9. Docker Compose, Makefile, and README polish
+1. Scaffold base del proyecto y settings
+2. Modelos de SQLAlchemy y migración de Alembic
+3. CLI de seed
+4. Tests unitarios del evaluador de alertas
+5. API de alertas
+6. Evaluación del worker y creación idempotente de triggers
+7. Webhook mock y retries de delivery
+8. API de notificaciones
+9. Pulido de Docker Compose, Makefile y README

@@ -26,6 +26,7 @@ from app.main import app
 from app.modules.alerts.models import Alert, AlertMetric, AlertOperator, AlertTrigger
 from app.modules.alerts.service import build_delivery_row, build_trigger_snapshot
 from app.modules.fields.models import Field
+from app.modules.notifications.delivery import close_delivery_clients
 from app.modules.notifications.models import DeliveryStatus, NotificationDelivery
 from app.modules.users.models import User
 from app.modules.weather.models import WeatherForecast
@@ -163,6 +164,12 @@ async def reset_database(request: pytest.FixtureRequest) -> None:
         await session.commit()
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def cleanup_delivery_clients() -> None:
+    yield
+    await close_delivery_clients()
+
+
 @pytest_asyncio.fixture
 async def db_session(session_factory: async_sessionmaker[AsyncSession]) -> AsyncSession:
     async with session_factory() as session:
@@ -177,7 +184,10 @@ async def client(session_factory: async_sessionmaker[AsyncSession]) -> AsyncClie
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as test_client:
         yield test_client
     app.dependency_overrides.clear()
 

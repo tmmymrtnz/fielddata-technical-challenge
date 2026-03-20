@@ -24,7 +24,7 @@ services:
     autoDeployTrigger: checksPass
     dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
     preDeployCommand: alembic upgrade head
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -42,6 +42,8 @@ services:
       - key: DELIVERY_BACKOFF_MINUTES
         value: 1,5,15
       - key: REQUEST_TIMEOUT_SECONDS
+        value: "10"
+      - key: WORKER_FAILURE_BACKOFF_SECONDS
         value: "10"
 
   - type: worker
@@ -69,4 +71,6 @@ services:
       - key: DELIVERY_BACKOFF_MINUTES
         value: 1,5,15
       - key: REQUEST_TIMEOUT_SECONDS
+        value: "10"
+      - key: WORKER_FAILURE_BACKOFF_SECONDS
         value: "10"
