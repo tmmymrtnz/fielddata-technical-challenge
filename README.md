@@ -1,50 +1,67 @@
-# Climate Alerts Challenge
+# Challenge Técnico de Alertas Climáticas
 
-Backend technical challenge for a climate alerting system built with FastAPI, SQLAlchemy, PostgreSQL, Alembic, and an async worker.
+Challenge técnico backend para un sistema de alertas climáticas construido con FastAPI, SQLAlchemy, PostgreSQL, Alembic y un worker async.
 
-## What This Solves
+## Qué Resuelve
 
-The system allows users to configure weather alerts on their fields, periodically evaluates stored forecast data, and creates notifications when a configured threshold is met.
+El sistema permite que los usuarios configuren alertas meteorológicas sobre sus campos, evalúa periódicamente los forecasts persistidos y crea notificaciones cuando se cumple un umbral configurado.
 
-This repository includes:
+Este repositorio incluye:
 
-- REST API endpoints
-- background worker for alert evaluation
-- PostgreSQL schema and Alembic migrations
-- mock weather data seeding
-- mock notification delivery over HTTP
-- unit and integration tests
+- endpoints de API REST
+- worker en background para evaluar alertas
+- esquema PostgreSQL y migraciones de Alembic
+- seed de datos climáticos mockeados
+- delivery mockeado de notificaciones por HTTP
+- tests unitarios y de integración
 
-WhatsApp integration is intentionally not implemented. Instead, notifications are delivered to a mock webhook service that logs the received payload.
+La integración con WhatsApp no está implementada a propósito. En su lugar, las notificaciones se envían a un webhook mock que loguea el payload recibido.
 
-## Assumptions And Scope
+## Supuestos y Alcance
 
-I made these explicit assumptions to keep the implementation focused and production-oriented:
+Tomé estos supuestos explícitos para mantener la implementación enfocada y con criterio de producción:
 
-- Forecast granularity is daily.
-- Weather data is already ingested and stored in the database.
-- For the exercise, ingestion is mocked with a seed script.
-- Alerts are modeled as generic rules over stored metrics rather than hardcoded event-specific logic.
-- No authentication layer is included; API access is scoped by `user_id`.
-- A field belongs to exactly one user.
+- La granularidad del forecast es diaria.
+- Los datos climáticos ya fueron ingeridos y están persistidos en la base.
+- Para este ejercicio, la ingesta está mockeada con un script de seed.
+- Las alertas están modeladas como reglas genéricas sobre métricas persistidas, no como lógica hardcodeada por tipo de evento.
+- No hay capa de autenticación; el acceso a la API está scopeado por `user_id`.
+- Cada campo pertenece exactamente a un usuario.
 
-## Main Design Decisions
+Como no hay autenticación real en esta versión, el `user_id` viaja explícitamente en los requests de lectura y escritura para permitir validación de ownership. En una versión productiva, ese `user_id` saldría del contexto de autenticación y no del request.
 
-### Modular Monolith With Two Processes
+## Supuestos Adicionales Tomados Durante la Implementación
 
-The project is implemented as a modular monolith with separate entrypoints for:
+Además del alcance base del challenge, durante la implementación se tomaron estas decisiones explícitas:
 
-- `api`: serves HTTP traffic
-- `worker`: periodically evaluates alerts and delivers notifications
+- La evaluación es eventual: crear o editar una alerta no dispara una evaluación sincrónica desde la API; el efecto se ve cuando corre el worker.
+- El sistema está pensado para una sola instancia de worker. No intenta resolver coordinación distribuida ni claiming entre múltiples workers.
+- Las métricas y umbrales se almacenan como enteros para simplificar comparaciones, constraints y snapshots. Eso prioriza claridad y robustez por sobre precisión decimal fina.
+- La semántica temporal relevante del dominio está basada en `forecast_date` diaria, no en timestamps intradía por zona geográfica del campo.
+- El único canal de delivery implementado es un webhook HTTP mock. No hay fan-out multicanal ni preferencias por usuario.
+- El historial de notificaciones se conserva a través de snapshots; editar o borrar una alerta no reescribe eventos ya disparados.
+- Los listados no tienen paginación ni filtros avanzados porque la escala objetivo del challenge es chica y controlada.
+- Los campos y forecasts no se gestionan desde la API pública en esta versión; entran por seed/mock de ingesta previa.
 
-Both share the same codebase and domain model, but run as separate processes. This keeps the API responsive and avoids coupling request latency to batch execution.
-This version assumes a single worker instance and does not coordinate multiple workers.
+Estas decisiones están pensadas para mantener el proyecto defendible y coherente como challenge backend, sin agregar complejidad que no sume señal técnica.
 
-### Weather Data Model
+## Decisiones de Diseño Principales
 
-Forecasts are stored in a single daily table: `weather_forecasts`.
+### Monolito Modular con Dos Procesos
 
-Supported metrics in v1:
+El proyecto está implementado como un monolito modular con entrypoints separados para:
+
+- `api`: atiende tráfico HTTP
+- `worker`: evalúa alertas periódicamente y entrega notificaciones
+
+Ambos comparten el mismo codebase y el mismo modelo de dominio, pero corren como procesos separados. Eso mantiene a la API responsiva y evita acoplar la latencia de requests con la ejecución batch.
+Esta versión asume una sola instancia de worker y no coordina múltiples workers.
+
+### Modelo de Datos Climáticos
+
+Los forecasts se almacenan en una única tabla diaria: `weather_forecasts`.
+
+Métricas soportadas en v1:
 
 - `temp_min_c`
 - `temp_max_c`
@@ -55,11 +72,11 @@ Supported metrics in v1:
 - `wind_speed_mps`
 - `wind_gust_mps`
 
-I intentionally removed `weather_code` for this version to avoid inventing event semantics not strictly required by the challenge.
+Saqué `weather_code` a propósito en esta versión para no inventar semánticas de eventos que no eran estrictamente necesarias para el challenge.
 
-### Alert Model
+### Modelo de Alertas
 
-Alerts are defined by:
+Las alertas se definen por:
 
 - `field_id`
 - `metric`
@@ -67,45 +84,45 @@ Alerts are defined by:
 - `threshold_value`
 - `lookahead_days`
 
-Operators supported:
+Operadores soportados:
 
 - `lt`
 - `lte`
 - `gt`
 - `gte`
 
-`lookahead_days` is configured per alert and constrained to `1..30`.
+`lookahead_days` se configura por alerta y está acotado a `1..30`.
 
-### Business Rules
+### Reglas de Negocio
 
-- Each forecast day is evaluated independently.
-- A single alert can trigger once per `forecast_date`.
-- `NULL` metric values do not trigger alerts.
-- Alerts are soft deleted.
-- Editing an alert affects future worker cycles only.
-- Existing triggers are not canceled if forecast data changes later.
+- Cada día de forecast se evalúa de manera independiente.
+- Una misma alerta puede dispararse una sola vez por `forecast_date`.
+- Los valores de métrica en `NULL` no disparan alertas.
+- Las alertas tienen soft delete.
+- Editar una alerta impacta sólo en ciclos futuros del worker.
+- Los triggers existentes no se cancelan si el forecast cambia después.
 
-### Idempotency
+### Idempotencia
 
-Idempotency is enforced at the database level through:
+La idempotencia se garantiza a nivel base de datos con:
 
-- `UNIQUE(field_id, forecast_date)` on `weather_forecasts`
-- `UNIQUE(alert_id, weather_forecast_id)` on `alert_triggers`
+- `UNIQUE(field_id, forecast_date)` en `weather_forecasts`
+- `UNIQUE(alert_id, weather_forecast_id)` en `alert_triggers`
 
-This guarantees that rerunning the worker does not generate duplicate triggers for the same alert and forecast row.
+Eso garantiza que volver a correr el worker no genere triggers duplicados para la misma alerta y la misma fila de forecast.
 
-### Trigger Creation vs Delivery
+### Separación entre Trigger y Delivery
 
-I separated business triggering from outbound delivery:
+Separé el disparo de negocio del delivery saliente:
 
-- `alert_triggers`: the alert condition was met
-- `notification_deliveries`: the system attempted to send the notification
+- `alert_triggers`: se cumplió la condición de la alerta
+- `notification_deliveries`: el sistema intentó enviar la notificación
 
-This keeps the core alerting logic clean and allows retries without duplicating business events.
+Eso mantiene limpia la lógica central de alertas y permite retries sin duplicar eventos de negocio.
 
-## Data Model
+## Modelo de Datos
 
-Main tables:
+Tablas principales:
 
 - `users`
 - `fields`
@@ -114,83 +131,85 @@ Main tables:
 - `alert_triggers`
 - `notification_deliveries`
 
-`alert_triggers` stores a snapshot of the alert rule at trigger time, so notification history remains stable even if the alert is edited later.
+`alert_triggers` guarda un snapshot de la regla al momento del disparo, así el historial de notificaciones se mantiene estable aunque después se edite la alerta.
 
-## Async And Background Processing
+## Asincronía y Procesamiento en Background
 
-The worker is asynchronous and runs independently from the API.
-The implementation assumes only one worker process evaluating alerts and sending notifications.
+El worker es asíncrono y corre separado de la API.
+La implementación asume un solo proceso worker evaluando alertas y enviando notificaciones.
 
-Each cycle:
+Cada ciclo:
 
-1. Loads active alerts.
-2. Looks up forecasts for each alert horizon.
-3. Evaluates the configured metric/operator/threshold.
-4. Inserts missing triggers idempotently.
-5. Creates pending delivery rows.
-6. Sends pending notifications to the mock webhook.
-7. Retries failed deliveries with backoff.
+1. Carga las alertas activas.
+2. Busca los forecasts para el horizonte de cada alerta.
+3. Evalúa la métrica, el operador y el umbral configurados.
+4. Inserta los triggers faltantes de manera idempotente.
+5. Crea filas pendientes de delivery.
+6. Envía las notificaciones pendientes al webhook mock.
+7. Reintenta deliveries fallidos con backoff.
 
-Default worker interval is `1` minute, configurable with `--interval-minutes`.
+El intervalo por defecto del worker es de `1` minuto y se puede configurar con `--interval-minutes`.
+Si un ciclo falla, el worker loguea la excepción y reintenta después de un backoff corto configurable, en lugar de morirse definitivamente.
 
-## How Weather Data Is Mocked
+## Cómo Están Mockeados los Datos Climáticos
 
-The challenge states that a weather ingestion job already exists. For this exercise, that ingestion is mocked through a seed command that inserts:
+El challenge asume que ya existe un job de ingesta climática. Para este ejercicio, esa ingesta está mockeada mediante un comando de seed que inserta:
 
-- `12` users by default
-- `48` fields by default, with multiple fields per user
-- `720` daily forecasts by default
-- `144` sample alerts by default
+- `12` usuarios por defecto
+- `48` campos por defecto, con varios campos por usuario
+- `720` forecasts diarios por defecto
+- `144` alertas de ejemplo por defecto
 
-The first seeded users and fields stay human-readable for demos:
+Los primeros usuarios y campos seedados se mantienen legibles para la demo:
 
 - `Alice Farmer`: `Campo Norte`, `Campo Sur`, `Campo Central`, `Campo Oeste`
 - `Bob Grower`: `Lote Este`, `Lote Oeste`, `Lote Norte`, `Lote Sur`
 
-Seed command:
+Comando de seed:
 
 ```bash
 python -m app.cli seed-demo --reset
 ```
 
-You can also scale the dataset up or down:
+También podés escalar el dataset para arriba o para abajo:
 
 ```bash
 python -m app.cli seed-demo --reset --users 20 --fields-per-user 5 --forecast-days 21
 ```
 
-## How To Run
+## Cómo Correrlo
 
-The easiest way to reproduce the project is with Docker Compose.
+La forma más simple de reproducir el proyecto es con Docker Compose.
 
-### Prerequisites
+### Requisitos Previos
 
 - Docker
 - Docker Compose
 
-### Startup
+### Inicio
 
 ```bash
 make up
 ```
 
-This will:
+Esto:
 
-- start PostgreSQL
-- start the mock notification webhook
-- apply Alembic migrations
-- seed demo data
-- start the API
-- start the worker
+- levanta PostgreSQL
+- levanta el webhook mock de notificaciones
+- aplica migraciones de Alembic
+- seedea datos de demo
+- levanta la API
+- levanta el worker
 
-API docs:
+Documentación de la API:
 
 - [http://localhost:8000/docs](http://localhost:8000/docs)
 
-### Useful Commands
+### Comandos Útiles
 
 - `make migrate`
 - `make seed`
+- `make demo`
 - `make worker-once`
 - `make test`
 - `make test-local`
@@ -199,58 +218,66 @@ API docs:
 
 ## CI/CD
 
-The repository includes GitHub Actions CI in `.github/workflows/ci.yml`.
+El repositorio incluye CI con GitHub Actions en `.github/workflows/ci.yml`.
 
-Flow:
+Flujo:
 
-- every pull request runs the full test suite against PostgreSQL
-- pushes to `main` run the same checks again
-- if checks pass on `main`, Render can deploy automatically
+- cada pull request corre la suite completa contra PostgreSQL
+- los pushes a `main` vuelven a correr los mismos checks
+- si los checks pasan en `main`, Render puede deployar automáticamente
 
-CI steps:
+Pasos del CI:
 
-- install Python dependencies
-- compile the codebase with `compileall`
-- run `pytest` against a PostgreSQL service
-- build the Docker image to catch container build regressions
+- instalar dependencias de Python
+- compilar el codebase con `compileall`
+- correr `pytest` contra un servicio PostgreSQL
+- buildar la imagen Docker para detectar regressions del contenedor
 
-## Cloud Deployment
+## Deploy en la Nube
 
-The repository includes a Render Blueprint in `render.yaml`.
+El repositorio incluye un Blueprint de Render en `render.yaml`.
 
-It defines:
+Define:
 
-- one managed PostgreSQL database
-- one web service for the API
-- one background worker
-- one private service for the mock WhatsApp webhook
+- una base PostgreSQL administrada
+- un servicio web para la API
+- un worker en background
+- un servicio privado para el webhook mock de WhatsApp
 
-Recommended setup:
+Setup recomendado:
 
-1. Push the repository to GitHub.
-2. In Render, create a new Blueprint and point it to this repository.
-3. Keep `autoDeployTrigger: checksPass` for the services.
-4. Open a pull request: GitHub Actions runs CI.
-5. Merge to `main`: GitHub Actions runs again, and Render deploys only after checks are green.
+1. Subí el repositorio a GitHub.
+2. En Render, creá un Blueprint nuevo y apuntalo a este repositorio.
+3. Mantené `autoDeployTrigger: checksPass` en los servicios.
+4. Abrí un pull request: GitHub Actions corre CI.
+5. Mergeá a `main`: GitHub Actions corre de nuevo, y Render deploya sólo si los checks quedan en verde.
 
-Notes:
+Notas:
 
-- the application accepts Render's standard Postgres connection string and normalizes it to `asyncpg`
-- the API runs `alembic upgrade head` as a pre-deploy command
-- the worker and API resolve the mock webhook URL from the private service host/port
-- this stack uses paid Render resources (`starter` services and a small managed Postgres plan), which is fine for a challenge/demo but should be called out explicitly
+- la aplicación acepta el connection string estándar de Postgres de Render y lo normaliza a `asyncpg`
+- la API corre `alembic upgrade head` como `preDeployCommand`
+- el worker y la API resuelven la URL del webhook mock a partir del host/port del servicio privado
+- el health check de Render apunta a `/ready`, que verifica conectividad con la base en lugar de chequear sólo que el proceso siga vivo
+- este stack usa recursos pagos de Render (`starter` y una instancia chica de Postgres administrado), lo cual está bien para challenge/demo pero conviene decirlo explícitamente
 
-## API Overview
+## Resumen de la API
+
+Nota:
+
+- los endpoints usan `user_id` para validar ownership porque el challenge no implementa autenticación real; en una versión productiva, ese dato debería resolverse desde auth y no venir en query params o payloads
+- los errores HTTP se devuelven con un formato consistente que incluye `error.code`, `error.message` y `request_id`, para facilitar debugging y trazabilidad
 
 - `GET /health`
+- `GET /ready`
 - `GET /fields?user_id=1`
 - `POST /alerts`
 - `GET /alerts?user_id=1`
+- `GET /alerts/{id}?user_id=1`
 - `PATCH /alerts/{id}?user_id=1`
 - `DELETE /alerts/{id}?user_id=1`
 - `GET /notifications?user_id=1`
 
-Example alert payload:
+Ejemplo de payload para una alerta:
 
 ```json
 {
@@ -264,34 +291,34 @@ Example alert payload:
 }
 ```
 
-## Migrations
+## Migraciones
 
-Alembic is used for schema versioning.
+Alembic se usa para versionar el esquema.
 
-Run migrations manually with:
+Para correr migraciones manualmente:
 
 ```bash
 make migrate
 ```
 
-Initial migration lives in:
+La migración inicial está en:
 
 - `alembic/versions/20260320_0001_initial_schema.py`
 
 ## Tests
 
-The repository includes:
+El repositorio incluye:
 
-- unit tests for the metric evaluator
-- integration tests covering alert creation, worker execution, notification generation, and soft delete behavior
+- tests unitarios para el evaluador de métricas
+- tests de integración que cubren creación de alertas, ejecución del worker, generación de notificaciones y comportamiento de soft delete
 
-Run tests with:
+Para correr tests:
 
 ```bash
 make test
 ```
 
-For local `pytest` runs outside Docker, create a dedicated test env file once:
+Para correr `pytest` localmente fuera de Docker, creá una vez un archivo de entorno dedicado para tests:
 
 ```bash
 cp .env.test.example .env.test
@@ -299,37 +326,62 @@ docker compose up -d db
 make test-local
 ```
 
-`make test-local` uses `127.0.0.1:55432` by default so it does not accidentally connect to a PostgreSQL instance already running on your machine. Override `HOST_POSTGRES_PORT` only if you need a different published port.
+`make test-local` usa `127.0.0.1:55432` por defecto para no conectarse por accidente a una instancia de PostgreSQL que ya tengas corriendo en tu máquina. Sobrescribí `HOST_POSTGRES_PORT` sólo si necesitás publicar la base en otro puerto.
 
-The test suite resolves the database URL in this order:
+La suite resuelve la URL de base en este orden:
 
 - `TEST_DATABASE_URL`
 - `DATABASE_URL`
 - `.env.test`
 
-The database name must be exactly `climate_alerts_test` so tests cannot accidentally run against the app database.
+El nombre de la base tiene que ser exactamente `climate_alerts_test` para que los tests no puedan correr por error contra la base de la app.
 
-I also verified the implementation locally with `pytest` in a project virtualenv.
+La implementación también fue verificada localmente con `pytest` dentro de un virtualenv del proyecto.
 
-## Demo Notes
+## Notas para la Demo
 
-- Notification delivery is mocked through an HTTP webhook, not WhatsApp.
-- The webhook logs the payload to stdout.
-- Retry behavior can be demonstrated by setting `MOCK_WHATSAPP_FAIL_FIRST_DELIVERY=true`.
+- El delivery de notificaciones está mockeado con un webhook HTTP, no con WhatsApp real.
+- El webhook loguea el payload por stdout.
+- El comportamiento de retry se puede mostrar seteando `MOCK_WHATSAPP_FAIL_FIRST_DELIVERY=true`.
 
-## Repository Structure
+## Estructura del Repositorio
 
-- `app/`: application code
-- `alembic/`: migrations
-- `tests/`: unit and integration tests
-- `docs/`: implementation notes
+- `app/`: código de la aplicación
+- `alembic/`: migraciones
+- `tests/`: tests unitarios y de integración
+- `docs/`: notas de implementación
 
-## Possible Next Steps
+Guion de demo:
 
-If this were extended beyond the challenge, the next improvements I would consider are:
+- `docs/DEMO_GUIDE.md`
 
-- real authentication and authorization
-- stronger observability around worker cycles
-- pagination/filtering on notifications
-- multi-worker-safe coordination if horizontal worker scaling becomes necessary
-- real ingestion integration instead of seeded forecasts
+## Consideraciones Futuras
+
+Si este proyecto evolucionara más allá del challenge, las prioridades naturales serían:
+
+### 1. Endurecimiento para producción
+
+- autenticación y autorización reales
+- secrets management y configuración por entorno más estricta
+- métricas, trazas y dashboards para API y worker
+- políticas de restart, alerting y health checks operativos más completas
+
+### 2. Evolución del modelo operativo
+
+- ingesta real de forecasts en lugar de datos seedados
+- paginación y filtros en endpoints de lectura
+- soporte para más canales de notificación
+- rate limiting y controles de abuse en la API
+
+### 3. Escalado y consistencia
+
+- coordinación segura entre múltiples workers si hiciera falta escalar horizontalmente
+- semánticas más fuertes de scheduling o dirty-tracking para evitar reevaluación completa en escenarios grandes
+- aislamiento más explícito entre estado de negocio y estado operativo del delivery
+
+### 4. Profundización del dominio
+
+- zonas horarias por campo o por usuario
+- métricas adicionales o eventos compuestos
+- políticas más ricas de deduplicación y supresión de alertas
+- reglas más expresivas que una sola métrica por alerta

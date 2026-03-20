@@ -50,6 +50,16 @@ async def list_alerts(
     return [AlertRead(**alert_to_read(alert)) for alert in result.scalars().all()]
 
 
+@router.get("/{alert_id}", response_model=AlertRead)
+async def get_alert(
+    alert_id: int,
+    user_id: int = Query(..., ge=1),
+    session: AsyncSession = Depends(get_session),
+) -> AlertRead:
+    alert = await require_alert_for_user(session, alert_id, user_id)
+    return AlertRead(**alert_to_read(alert))
+
+
 @router.patch("/{alert_id}", response_model=AlertRead)
 async def update_alert(
     alert_id: int,
