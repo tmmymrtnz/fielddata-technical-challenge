@@ -31,7 +31,7 @@ from app.modules.notifications.models import DeliveryStatus, NotificationDeliver
 from app.modules.users.models import User
 from app.modules.weather.models import WeatherForecast
 
-HEAD_REVISION = "20260320_0003"
+HEAD_REVISION = "20260320_0005"
 TEST_DATABASE_NAME = "climate_alerts_test"
 TEST_ENV_FILE = Path(".env.test")
 TRUNCATE_TABLES = ", ".join(table.name for table in reversed(Base.metadata.sorted_tables))

@@ -84,6 +84,12 @@ Las alertas se definen por:
 - `threshold_value`
 - `lookahead_days`
 
+Validaciones semánticas relevantes:
+
+- para métricas de probabilidad (`rain_probability_pct`, `snow_probability_pct`), `threshold_value` debe estar entre `0` y `100`
+- para métricas no negativas (`rain_mm`, `snow_mm`, `wind_speed_mps`, `wind_gust_mps`), `threshold_value` debe ser `>= 0`
+- para métricas de temperatura, `threshold_value` puede ser negativo
+
 Operadores soportados:
 
 - `lt`
@@ -108,6 +114,7 @@ La idempotencia se garantiza a nivel base de datos con:
 
 - `UNIQUE(field_id, forecast_date)` en `weather_forecasts`
 - `UNIQUE(alert_id, weather_forecast_id)` en `alert_triggers`
+- un índice único parcial para evitar reglas de alerta activas duplicadas sobre el mismo campo (`field_id + metric + operator + threshold_value + lookahead_days` mientras no estén soft-deleted)
 
 Eso garantiza que volver a correr el worker no genere triggers duplicados para la misma alerta y la misma fila de forecast.
 
@@ -132,6 +139,13 @@ Tablas principales:
 - `notification_deliveries`
 
 `alert_triggers` guarda un snapshot de la regla al momento del disparo, así el historial de notificaciones se mantiene estable aunque después se edite la alerta.
+
+Invariantes de integridad relevantes:
+
+- una alerta soft-deleted no puede seguir activa
+- los snapshots de triggers respetan el mismo rango de `lookahead_days` que la alerta original
+- el mensaje persistido del trigger se guarda como `TEXT` para no truncar casos válidos con nombres largos
+- `notification_deliveries` valida consistencia básica entre `status`, `attempt_count`, `sent_at`, `last_error` y `response_status`
 
 ## Asincronía y Procesamiento en Background
 
@@ -185,6 +199,25 @@ La forma más simple de reproducir el proyecto es con Docker Compose.
 
 - Docker
 - Docker Compose
+
+### Entorno Virtual Local
+
+Si querés correr comandos Python fuera de Docker, conviene crear un virtualenv local del proyecto:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev]"
+```
+
+Esto no es necesario para `make up`, `make demo` o `make test`, porque esos flujos corren dentro de contenedores.
+Sí es útil para:
+
+- `make test-local`
+- correr `pytest` directo
+- ejecutar el CLI de seed fuera de Docker
+- iterar localmente sobre la app
 
 ### Inicio
 

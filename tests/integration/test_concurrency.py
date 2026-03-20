@@ -63,7 +63,7 @@ async def test_single_worker_processes_due_deliveries_across_multiple_batches(
     field = await factory.field()
     forecast = await factory.forecast(field=field, temp_min_c=-2)
     for index in range(3):
-        alert = await factory.alert(field=field, name=f"Alert {index}", threshold_value=0)
+        alert = await factory.alert(field=field, name=f"Alert {index}", threshold_value=index)
         trigger = await factory.trigger(alert=alert, forecast=forecast, triggered_value=-2 - index)
         await factory.delivery(trigger=trigger, status=DeliveryStatus.PENDING, next_attempt_at=frozen_time())
 

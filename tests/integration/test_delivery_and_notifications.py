@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from app.modules.alerts.models import Alert, AlertMetric, AlertOperator
+from app.modules.alerts.models import Alert, AlertMetric, AlertOperator, AlertTrigger
 from app.modules.fields.models import Field
 from app.modules.notifications.delivery import DeliveryResult
 from app.modules.notifications.models import DeliveryStatus, NotificationDelivery
@@ -259,3 +259,38 @@ async def test_delivery_exhausts_retries_and_stops_retrying(
     assert response.status_code == 200
     assert response.json()[0]["delivery"]["status"] == "failed"
     assert response.json()[0]["delivery"]["attempt_count"] == 2
+
+
+async def test_trigger_messages_can_exceed_500_characters_without_breaking_persistence(
+    factory,
+    frozen_time,
+    settings_factory,
+    session_factory,
+    monkeypatch,
+) -> None:
+    async def fake_delivery(url: str, payload: dict, timeout_seconds: int) -> DeliveryResult:  # noqa: ARG001
+        return DeliveryResult(success=True, response_status=202, error_message=None)
+
+    monkeypatch.setattr("app.worker.jobs.deliver_webhook", fake_delivery)
+
+    user = await factory.user(name="Alice", phone_number="+" + ("9" * 31))
+    field = await factory.field(user=user, name="Campo " + ("N" * 249))
+    await factory.forecast(field=field, forecast_date=frozen_time.today(), rain_probability_pct=90)
+    await factory.alert(
+        field=field,
+        name="Alerta " + ("L" * 248),
+        metric=AlertMetric.RAIN_PROBABILITY_PCT,
+        operator=AlertOperator.GTE,
+        threshold_value=80,
+        lookahead_days=1,
+    )
+
+    stats = await run_once(session_factory=session_factory, settings=settings_factory())
+
+    assert stats.created_triggers == 1
+    assert stats.delivered_notifications == 1
+
+    async with session_factory() as session:
+        trigger = (await session.execute(select(AlertTrigger))).scalar_one()
+
+    assert len(trigger.message) > 500
