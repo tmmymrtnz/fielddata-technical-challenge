@@ -34,6 +34,7 @@ Implement a backend service that lets users define weather alerts on their field
 - `app/cli.py`: seed command
 
 The worker is intentionally separated from the API process. That isolates batch execution from HTTP latency and keeps the scheduling logic out of the web app lifecycle.
+The current implementation assumes a single worker instance. Horizontal worker scaling is out of scope for this version.
 
 ## Modeling Decisions
 
@@ -123,4 +124,3 @@ Recommended demo flow:
 7. Mock webhook and delivery retries
 8. Notifications API
 9. Docker Compose, Makefile, and README polish
-

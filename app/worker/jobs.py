@@ -5,7 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from sqlalchemy import case, or_, select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,7 +35,7 @@ class WorkerRunStats:
 
 
 @dataclass(slots=True)
-class ClaimedDelivery:
+class PendingDelivery:
     delivery_id: int
     trigger_id: int
     target_url: str
@@ -72,14 +72,6 @@ def _backoff_minutes(settings: Settings, attempt_count: int) -> int:
     return schedule[index]
 
 
-def _supports_skip_locked(session: AsyncSession) -> bool:
-    return session.get_bind().dialect.name == "postgresql"
-
-
-def _alert_claim_cutoff(claimed_at, settings: Settings):
-    return claimed_at - timedelta(minutes=max(settings.worker_interval_minutes, 1))
-
-
 async def _create_trigger_if_missing(session: AsyncSession, alert: Alert, forecast) -> int | None:
     matches, value = forecast_matches_alert(alert, forecast)
     if not matches or value is None:
@@ -106,51 +98,11 @@ async def _create_delivery_if_missing(session: AsyncSession, trigger_id: int, ta
     return result.scalar_one_or_none()
 
 
-async def _claim_alert_batch_ids(
-    session_factory: async_sessionmaker[AsyncSession],
-    settings: Settings,
-) -> list[int]:
-    claimed_at = utcnow()
-    cutoff = _alert_claim_cutoff(claimed_at, settings)
-
-    async with session_factory() as session:
-        stmt = (
-            select(Alert.id)
-            .where(
-                Alert.is_active.is_(True),
-                Alert.deleted_at.is_(None),
-                or_(Alert.last_evaluated_at.is_(None), Alert.last_evaluated_at <= cutoff),
-            )
-            .order_by(
-                case((Alert.last_evaluated_at.is_(None), 0), else_=1),
-                Alert.last_evaluated_at,
-                Alert.id,
-            )
-            .limit(settings.worker_alert_batch_size)
-        )
-        if _supports_skip_locked(session):
-            stmt = stmt.with_for_update(skip_locked=True, of=Alert)
-
-        result = await session.execute(stmt)
-        alert_ids = result.scalars().all()
-        if not alert_ids:
-            return []
-
-        await session.execute(
-            update(Alert)
-            .where(Alert.id.in_(alert_ids))
-            .values(last_evaluated_at=claimed_at)
-        )
-        await session.commit()
-
-    return list(alert_ids)
-
-
-async def _load_alert_batch(session: AsyncSession, alert_ids: list[int]) -> list[Alert]:
+async def _load_active_alerts(session: AsyncSession) -> list[Alert]:
     result = await session.execute(
         select(Alert)
         .options(joinedload(Alert.field).joinedload(Field.user))
-        .where(Alert.id.in_(alert_ids))
+        .where(Alert.is_active.is_(True), Alert.deleted_at.is_(None))
         .order_by(Alert.id)
     )
     return result.scalars().unique().all()
@@ -183,16 +135,16 @@ async def _load_candidate_forecasts(
     return forecasts_by_field
 
 
-async def _evaluate_alert_batch(
+async def evaluate_alerts(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
-    alert_ids: list[int],
-    today: date,
 ) -> WorkerRunStats:
     stats = WorkerRunStats()
+    evaluated_at = utcnow()
+    today = evaluated_at.date()
 
     async with session_factory() as session:
-        alerts = await _load_alert_batch(session, alert_ids)
+        alerts = await _load_active_alerts(session)
         if not alerts:
             return stats
 
@@ -212,63 +164,40 @@ async def _evaluate_alert_batch(
                 stats.created_triggers += 1
                 await _create_delivery_if_missing(session, trigger_id, settings.mock_whatsapp_url)
 
+            alert.last_evaluated_at = evaluated_at
+
         await session.commit()
 
     return stats
 
 
-async def evaluate_alerts(
+async def _load_pending_delivery_batch(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
-) -> WorkerRunStats:
-    stats = WorkerRunStats()
-    today = utcnow().date()
-
-    while True:
-        alert_ids = await _claim_alert_batch_ids(session_factory, settings)
-        if not alert_ids:
-            break
-
-        batch_stats = await _evaluate_alert_batch(session_factory, settings, alert_ids, today)
-        stats.evaluated_alerts += batch_stats.evaluated_alerts
-        stats.created_triggers += batch_stats.created_triggers
-
-    return stats
-
-
-async def _claim_delivery_batch(
-    session_factory: async_sessionmaker[AsyncSession],
-    settings: Settings,
-) -> list[ClaimedDelivery]:
-    claimed_at = utcnow()
-    lease_until = claimed_at + timedelta(seconds=settings.delivery_claim_ttl_seconds)
+) -> list[PendingDelivery]:
+    due_at = utcnow()
 
     async with session_factory() as session:
-        stmt = (
+        result = await session.execute(
             select(NotificationDelivery)
             .join(NotificationDelivery.trigger)
             .where(
                 NotificationDelivery.status.in_([DeliveryStatus.PENDING, DeliveryStatus.RETRYING]),
-                NotificationDelivery.next_attempt_at <= claimed_at,
+                NotificationDelivery.next_attempt_at <= due_at,
             )
             .options(joinedload(NotificationDelivery.trigger))
             .order_by(NotificationDelivery.next_attempt_at, NotificationDelivery.id)
             .limit(settings.worker_delivery_batch_size)
         )
-        if _supports_skip_locked(session):
-            stmt = stmt.with_for_update(skip_locked=True, of=NotificationDelivery)
-
-        result = await session.execute(stmt)
         deliveries = result.scalars().unique().all()
         if not deliveries:
             return []
 
-        claimed_deliveries: list[ClaimedDelivery] = []
+        pending_deliveries: list[PendingDelivery] = []
         for delivery in deliveries:
-            delivery.next_attempt_at = lease_until
             trigger = delivery.trigger
-            claimed_deliveries.append(
-                ClaimedDelivery(
+            pending_deliveries.append(
+                PendingDelivery(
                     delivery_id=delivery.id,
                     trigger_id=trigger.id,
                     target_url=delivery.target_url,
@@ -286,12 +215,10 @@ async def _claim_delivery_batch(
                 )
             )
 
-        await session.commit()
-
-    return claimed_deliveries
+    return pending_deliveries
 
 
-def _delivery_payload(delivery: ClaimedDelivery) -> dict:
+def _delivery_payload(delivery: PendingDelivery) -> dict:
     return {
         "trigger_id": delivery.trigger_id,
         "attempt_count": delivery.attempt_count + 1,
@@ -312,7 +239,7 @@ def _delivery_payload(delivery: ClaimedDelivery) -> dict:
 async def _apply_delivery_outcomes(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
-    outcomes: list[tuple[ClaimedDelivery, DeliveryResult]],
+    outcomes: list[tuple[PendingDelivery, DeliveryResult]],
 ) -> WorkerRunStats:
     stats = WorkerRunStats()
     if not outcomes:
@@ -326,8 +253,8 @@ async def _apply_delivery_outcomes(
         )
         deliveries = {delivery.id: delivery for delivery in result.scalars().all()}
 
-        for claimed_delivery, outcome in outcomes:
-            delivery = deliveries.get(claimed_delivery.delivery_id)
+        for pending_delivery, outcome in outcomes:
+            delivery = deliveries.get(pending_delivery.delivery_id)
             if delivery is None:
                 continue
 
@@ -364,8 +291,8 @@ async def deliver_pending_notifications(
     stats = WorkerRunStats()
 
     while True:
-        claimed_deliveries = await _claim_delivery_batch(session_factory, settings)
-        if not claimed_deliveries:
+        pending_deliveries = await _load_pending_delivery_batch(session_factory, settings)
+        if not pending_deliveries:
             break
 
         outcomes = await asyncio.gather(
@@ -375,13 +302,13 @@ async def deliver_pending_notifications(
                     _delivery_payload(delivery),
                     settings.request_timeout_seconds,
                 )
-                for delivery in claimed_deliveries
+                for delivery in pending_deliveries
             ]
         )
         batch_stats = await _apply_delivery_outcomes(
             session_factory,
             settings,
-            list(zip(claimed_deliveries, outcomes, strict=True)),
+            list(zip(pending_deliveries, outcomes, strict=True)),
         )
         stats.delivered_notifications += batch_stats.delivered_notifications
         stats.failed_notifications += batch_stats.failed_notifications
@@ -394,6 +321,9 @@ async def run_once(
     settings: Settings | None = None,
 ) -> WorkerRunStats:
     resolved_settings = settings or get_settings()
+    if resolved_settings.mock_whatsapp_url is None:
+        raise RuntimeError("mock_whatsapp_url must be configured")
+
     eval_stats = await evaluate_alerts(session_factory, resolved_settings)
     delivery_stats = await deliver_pending_notifications(session_factory, resolved_settings)
     return WorkerRunStats(

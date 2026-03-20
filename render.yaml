@@ -1,0 +1,72 @@
+databases:
+  - name: climate-alerts-db
+    databaseName: climate_alerts
+    user: climate_alerts
+    plan: basic-256mb
+
+services:
+  - type: pserv
+    name: climate-alerts-mock-whatsapp
+    runtime: docker
+    plan: starter
+    autoDeployTrigger: checksPass
+    dockerCommand: uvicorn app.mock_whatsapp.app:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO
+      - key: MOCK_WHATSAPP_FAIL_FIRST_DELIVERY
+        value: "false"
+
+  - type: web
+    name: climate-alerts-api
+    runtime: docker
+    plan: starter
+    autoDeployTrigger: checksPass
+    dockerCommand: uvicorn app.main:app --host 0.0.0.0 --port 10000
+    preDeployCommand: alembic upgrade head
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: climate-alerts-db
+          property: connectionString
+      - key: MOCK_WHATSAPP_HOSTPORT
+        fromService:
+          name: climate-alerts-mock-whatsapp
+          type: pserv
+          property: hostport
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DELIVERY_MAX_RETRIES
+        value: "3"
+      - key: DELIVERY_BACKOFF_MINUTES
+        value: 1,5,15
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "10"
+
+  - type: worker
+    name: climate-alerts-worker
+    runtime: docker
+    plan: starter
+    autoDeployTrigger: checksPass
+    dockerCommand: python -m app.worker.main --interval-minutes 1
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: climate-alerts-db
+          property: connectionString
+      - key: MOCK_WHATSAPP_HOSTPORT
+        fromService:
+          name: climate-alerts-mock-whatsapp
+          type: pserv
+          property: hostport
+      - key: LOG_LEVEL
+        value: INFO
+      - key: WORKER_INTERVAL_MINUTES
+        value: "1"
+      - key: DELIVERY_MAX_RETRIES
+        value: "3"
+      - key: DELIVERY_BACKOFF_MINUTES
+        value: 1,5,15
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: "10"

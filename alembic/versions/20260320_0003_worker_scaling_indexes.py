@@ -1,5 +1,6 @@
 """Add worker scaling index on alerts."""
 
+import sqlalchemy as sa
 from alembic import op
 
 
@@ -10,12 +11,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_index(
-        "ix_alerts_active_deleted_last_evaluated_id",
-        "alerts",
-        ["is_active", "deleted_at", "last_evaluated_at", "id"],
-        unique=False,
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing_indexes = {index["name"] for index in inspector.get_indexes("alerts")}
+    if "ix_alerts_active_deleted_last_evaluated_id" not in existing_indexes:
+        op.create_index(
+            "ix_alerts_active_deleted_last_evaluated_id",
+            "alerts",
+            ["is_active", "deleted_at", "last_evaluated_at", "id"],
+            unique=False,
+        )
 
 
 def downgrade() -> None:
