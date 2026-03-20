@@ -1,4 +1,5 @@
 COMPOSE=docker compose
+TEST_DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/climate_alerts_test
 
 .PHONY: up infra app down migrate seed worker-once test logs
 
@@ -27,8 +28,8 @@ worker-once:
 	$(COMPOSE) run --rm worker python -m app.worker.main --run-once
 
 test:
-	$(COMPOSE) run --rm api pytest
+	$(COMPOSE) up --build -d db
+	$(COMPOSE) run --rm --build -e DATABASE_URL=$(TEST_DATABASE_URL) api pytest
 
 logs:
 	$(COMPOSE) logs -f api worker mock-whatsapp db
-

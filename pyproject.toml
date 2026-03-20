@@ -33,3 +33,7 @@ include = ["app*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+markers = [
+  "concurrency: tests that exercise multi-worker claiming behavior",
+  "migration: tests that validate migrated PostgreSQL schema state",
+]
